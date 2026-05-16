@@ -9,6 +9,7 @@ from telegram.ext import (
     Application, MessageHandler, CallbackQueryHandler,
     CommandHandler, filters, ContextTypes
 )
+import re
 import anthropic
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -123,6 +124,11 @@ def get_sheet():
     return sheet
 
 
+def strip_html(text: str) -> str:
+    """Убирает HTML теги из текста"""
+    return re.sub(r'<[^>]+>', '', text)
+
+
 def save_sales_data(date_str: str, baskets_text: str, total: int, sold: int, unsold_numbers: str, notes: str):
     logger.info(f"Saving sales data: {date_str}, {sold}/{total}")
     sheet = get_sheet()
@@ -141,7 +147,7 @@ def save_sales_data(date_str: str, baskets_text: str, total: int, sold: int, uns
         total,
         sold,
         unsold_numbers,
-        baskets_text[:500],
+        strip_html(baskets_text)[:500],
         notes
     ])
     logger.info("Row appended successfully!")
