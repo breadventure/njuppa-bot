@@ -335,7 +335,49 @@ async def send_preview(context, baskets: str):
 
 # ── КОМАНДЫ ──────────────────────────────────────────────────────────────────
 
+async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверяет авторизацию и отправляет запрос если нет доступа. Возвращает True если авторизован."""
+    message = update.effective_message
+    user_id = message.chat.id
+    user_name = message.chat.first_name or ""
+    user_username = message.chat.username or ""
+
+    if is_authorized(user_id):
+        return True
+
+    pending = context.bot_data.get("pending_auth", set())
+    if user_id not in pending:
+        pending.add(user_id)
+        context.bot_data["pending_auth"] = pending
+
+        await message.reply_text(
+            "👋 Привет! Твой запрос на доступ отправлен администратору.\n"
+            "Ожидай подтверждения."
+        )
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Разрешить", callback_data=f"auth_approve_{user_id}"),
+                InlineKeyboardButton("❌ Отказать", callback_data=f"auth_deny_{user_id}"),
+            ]
+        ])
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔐 Запрос на доступ:\n\n"
+                 f"👤 Имя: {user_name}\n"
+                 f"🔗 Username: @{user_username}\n"
+                 f"🆔 ID: {user_id}\n\n"
+                 f"Разрешить доступ к боту?",
+            reply_markup=keyboard
+        )
+    else:
+        await message.reply_text("⏳ Твой запрос уже отправлен. Ожидай подтверждения.")
+    return False
+
+
 async def cmd_getprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update, context):
+        return
     if update.effective_chat.id != NADIA_CHAT_ID:
         return
     prompt = load_prompt()
@@ -345,6 +387,8 @@ async def cmd_getprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_setprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update, context):
+        return
     if update.effective_chat.id != NADIA_CHAT_ID:
         return
     context.user_data["state"] = WAITING_FOR_NEW_PROMPT
@@ -357,6 +401,8 @@ async def cmd_setprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Записать данные о продажах за день"""
+    if not await check_auth(update, context):
+        return
     if update.effective_chat.id != NADIA_CHAT_ID:
         return
     context.user_data["state"] = WAITING_FOR_SALES
@@ -371,6 +417,8 @@ async def cmd_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить аналитику продаж"""
+    if not await check_auth(update, context):
+        return
     if update.effective_chat.id != NADIA_CHAT_ID:
         return
     await update.message.reply_text("⏳ Анализирую данные, подожди...")
@@ -390,6 +438,8 @@ async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_rebuild(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Экстренная пересборка корзин"""
+    if not await check_auth(update, context):
+        return
     if update.effective_chat.id != NADIA_CHAT_ID:
         return
     context.user_data["state"] = WAITING_FOR_REBUILD
@@ -401,6 +451,8 @@ async def cmd_rebuild(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update, context):
+        return
     if update.effective_chat.id != NADIA_CHAT_ID:
         return
     context.user_data["state"] = None
@@ -470,42 +522,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message.chat.type != "private" or message.chat.id != NADIA_CHAT_ID:
         return
 
-    user_id = message.chat.id
-    user_name = message.chat.first_name or ""
-    user_username = message.chat.username or ""
-
-    # Проверяем авторизацию
-    if not is_authorized(user_id):
-        # Проверяем не отправляли ли уже запрос
-        pending = context.bot_data.get("pending_auth", set())
-        if user_id not in pending:
-            pending.add(user_id)
-            context.bot_data["pending_auth"] = pending
-
-            # Уведомляем пользователя
-            await message.reply_text(
-                "👋 Привет! Ты отправил запрос на доступ к боту.\n"
-                "Ожидай подтверждения от администратора."
-            )
-
-            # Отправляем запрос админу
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Разрешить", callback_data=f"auth_approve_{user_id}"),
-                    InlineKeyboardButton("❌ Отказать", callback_data=f"auth_deny_{user_id}"),
-                ]
-            ])
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"🔐 Запрос на доступ:\n\n"
-                     f"👤 Имя: {user_name}\n"
-                     f"🔗 Username: @{user_username}\n"
-                     f"🆔 ID: {user_id}\n\n"
-                     f"Разрешить доступ к боту?",
-                reply_markup=keyboard
-            )
-        else:
-            await message.reply_text("⏳ Твой запрос уже отправлен. Ожидай подтверждения.")
+    if not await check_auth(update, context):
         return
 
     state = context.user_data.get("state")
