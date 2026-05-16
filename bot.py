@@ -23,6 +23,8 @@ NJUPPA_CHAT_ID   = int(os.environ["NJUPPA_CHAT_ID"])
 NJUPPA_THREAD_ID = int(os.environ.get("NJUPPA_THREAD_ID", "0")) or None
 GOOGLE_SHEET_ID  = os.environ["GOOGLE_SHEET_ID"]
 PROMPT_FILE      = "prompt.txt"
+ADMIN_ID         = NADIA_CHAT_ID  # Админ = Надя
+AUTH_FILE        = "authorized_users.txt"
 # ─────────────────────────────────────────────────────────────────────────────
 
 WAITING_FOR_FIX        = "waiting_for_fix"
@@ -129,6 +131,29 @@ def strip_html(text: str) -> str:
     return re.sub(r'<[^>]+>', '', text)
 
 
+def clean_markdown(text: str) -> str:
+    """Убирает Markdown форматирование для читаемого вывода в Telegram"""
+    # Убираем ** жирный **
+    text = re.sub(r'[*][*](.+?)[*][*]', r'\1', text)
+    # Убираем * курсив *
+    text = re.sub(r'[*](.+?)[*]', r'\1', text)
+    # Убираем ``` код ```
+    text = re.sub(r'`{3}[\w]*', '', text)
+    # Заменяем ### заголовки
+    text = re.sub(r'^#{3} (.+)$', r'👉 \1', text, flags=re.MULTILINE)
+    # Заменяем ## заголовки
+    text = re.sub(r'^## (.+)$', r'\n📌 \1\n', text, flags=re.MULTILINE)
+    # Заменяем # заголовки
+    text = re.sub(r'^# (.+)$', r'\n📊 \1\n', text, flags=re.MULTILINE)
+    # Заменяем --- на разделитель
+    text = re.sub(r'^---+$', '─────────────', text, flags=re.MULTILINE)
+    # Убираем строки таблиц markdown с |---|
+    text = re.sub(r'^[|][-| ]+[|]$', '', text, flags=re.MULTILINE)
+    # Чистим лишние пустые строки
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 def save_sales_data(date_str: str, baskets_text: str, total: int, sold: int, unsold_numbers: str, notes: str):
     logger.info(f"Saving sales data: {date_str}, {sold}/{total}")
     sheet = get_sheet()
@@ -177,6 +202,33 @@ def save_prompt(text: str):
 
 # ── CLAUDE ────────────────────────────────────────────────────────────────────
 
+def load_authorized() -> set:
+    """Загружает список авторизованных пользователей"""
+    if not os.path.exists(AUTH_FILE):
+        # Админ всегда авторизован
+        return {ADMIN_ID}
+    with open(AUTH_FILE, "r") as f:
+        ids = set()
+        for line in f.read().splitlines():
+            if line.strip():
+                try:
+                    ids.add(int(line.strip()))
+                except ValueError:
+                    pass
+        ids.add(ADMIN_ID)
+        return ids
+
+
+def save_authorized(user_ids: set):
+    """Сохраняет список авторизованных пользователей"""
+    with open(AUTH_FILE, "w") as f:
+        f.write("\n".join(str(uid) for uid in user_ids))
+
+
+def is_authorized(user_id: int) -> bool:
+    return user_id in load_authorized()
+
+
 def extract_report_text(message) -> str | None:
     text = message.text or message.caption or ""
     if "Količina po vrstama" in text or "Cimet:" in text or "Datum:" in text:
@@ -218,13 +270,20 @@ def analyze_sales(analytics_data: str) -> str:
 Данные:
 {analytics_data}
 
-Сделай анализ:
+Сделай анализ по этим пунктам:
 1. Какие корзины продаются лучше/хуже
-2. Есть ли зависимость от дня недели
+2. Зависимость от дня недели
 3. Средний процент продаж
-4. Конкретные рекомендации по составу корзин на будущее
+4. Конкретные рекомендации
 
-Тон: простой, конкретный, с цифрами."""
+ВАЖНО по оформлению:
+- Используй ТОЛЬКО простой текст и эмодзи
+- БЕЗ markdown: никаких **, ##, --, [], ||
+- Разделяй блоки линией из символов: ─────────────
+- Заголовки блоков через эмодзи: 📊 Продажи по корзинам
+- Списки через эмодзи: ✅ хорошо, ❌ плохо, 👉 рекомендация
+- Цифры и факты выделяй caps: ТАРТИНЫ — ХИТ
+- Тон: простой, конкретный, дружелюбный"""
         }]
     )
     return response.content[0].text
@@ -245,7 +304,7 @@ def rebuild_baskets(current_baskets: str, sold_items: str) -> str:
             f"Верни полный обновлённый текст корзин."
         )}]
     )
-    return response.content[0].text
+    return clean_markdown(response.content[0].text)
 
 
 # ── КЛАВИАТУРЫ ────────────────────────────────────────────────────────────────
@@ -348,6 +407,42 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚫 Отменено.")
 
 
+async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список авторизованных пользователей"""
+    if update.effective_chat.id != ADMIN_ID:
+        return
+    authorized = load_authorized()
+    text = f"👥 Авторизованных пользователей: {len(authorized)}\n\n"
+    for uid in authorized:
+        text += f"• {uid}\n"
+    await update.message.reply_text(text)
+
+
+async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отозвать доступ: /revoke 123456789"""
+    if update.effective_chat.id != ADMIN_ID:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: /revoke 123456789")
+        return
+    try:
+        uid = int(args[0])
+        if uid == ADMIN_ID:
+            await update.message.reply_text("❌ Нельзя отозвать доступ у администратора.")
+            return
+        authorized = load_authorized()
+        authorized.discard(uid)
+        save_authorized(authorized)
+        await update.message.reply_text(f"✅ Доступ пользователя {uid} отозван.")
+        try:
+            await context.bot.send_message(chat_id=uid, text="⚠️ Твой доступ к боту был отозван.")
+        except Exception:
+            pass
+    except ValueError:
+        await update.message.reply_text("❌ Неверный ID пользователя.")
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != NADIA_CHAT_ID:
         return
@@ -360,7 +455,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/getprompt — посмотреть текущий промт\n"
         "/setprompt — изменить промт\n"
         "/cancel — отменить текущее действие\n"
-        "/help — эта справка"
+        "/help — эта справка\n\n"
+        "👑 Только для администратора:\n"
+        "/users — список авторизованных\n"
+        "/revoke [ID] — отозвать доступ"
     )
 
 
@@ -370,6 +468,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
 
     if message.chat.type != "private" or message.chat.id != NADIA_CHAT_ID:
+        return
+
+    user_id = message.chat.id
+    user_name = message.chat.first_name or ""
+    user_username = message.chat.username or ""
+
+    # Проверяем авторизацию
+    if not is_authorized(user_id):
+        # Проверяем не отправляли ли уже запрос
+        pending = context.bot_data.get("pending_auth", set())
+        if user_id not in pending:
+            pending.add(user_id)
+            context.bot_data["pending_auth"] = pending
+
+            # Уведомляем пользователя
+            await message.reply_text(
+                "👋 Привет! Ты отправил запрос на доступ к боту.\n"
+                "Ожидай подтверждения от администратора."
+            )
+
+            # Отправляем запрос админу
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Разрешить", callback_data=f"auth_approve_{user_id}"),
+                    InlineKeyboardButton("❌ Отказать", callback_data=f"auth_deny_{user_id}"),
+                ]
+            ])
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"🔐 Запрос на доступ:\n\n"
+                     f"👤 Имя: {user_name}\n"
+                     f"🔗 Username: @{user_username}\n"
+                     f"🆔 ID: {user_id}\n\n"
+                     f"Разрешить доступ к боту?",
+                reply_markup=keyboard
+            )
+        else:
+            await message.reply_text("⏳ Твой запрос уже отправлен. Ожидай подтверждения.")
         return
 
     state = context.user_data.get("state")
@@ -494,6 +630,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     baskets = context.bot_data.get(f"baskets_{NADIA_CHAT_ID}")
 
+    if query.data.startswith("auth_approve_"):
+        requesting_user_id = int(query.data.split("_")[-1])
+        authorized = load_authorized()
+        authorized.add(requesting_user_id)
+        save_authorized(authorized)
+
+        # Убираем из pending
+        pending = context.bot_data.get("pending_auth", set())
+        pending.discard(requesting_user_id)
+        context.bot_data["pending_auth"] = pending
+
+        await query.edit_message_text(f"✅ Пользователь {requesting_user_id} авторизован!")
+        await context.bot.send_message(
+            chat_id=requesting_user_id,
+            text="✅ Тебе разрешён доступ к боту! Можешь пересылать отчёты с остатками.\n\n/help — список команд"
+        )
+        return
+
+    elif query.data.startswith("auth_deny_"):
+        requesting_user_id = int(query.data.split("_")[-1])
+
+        # Убираем из pending
+        pending = context.bot_data.get("pending_auth", set())
+        pending.discard(requesting_user_id)
+        context.bot_data["pending_auth"] = pending
+
+        await query.edit_message_text(f"❌ Пользователь {requesting_user_id} отклонён.")
+        await context.bot.send_message(
+            chat_id=requesting_user_id,
+            text="❌ Твой запрос на доступ отклонён."
+        )
+        return
+
     if query.data == "publish":
         if not baskets:
             await query.edit_message_text("❌ Не нашла корзины для публикации.")
@@ -534,6 +703,8 @@ def main():
     app.add_handler(CommandHandler("sales", cmd_sales))
     app.add_handler(CommandHandler("analytics", cmd_analytics))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("users", cmd_users))
+    app.add_handler(CommandHandler("revoke", cmd_revoke))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
