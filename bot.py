@@ -10,6 +10,9 @@ from telegram.ext import (
     CommandHandler, filters, ContextTypes
 )
 import anthropic
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 BOT_TOKEN        = os.environ["BOT_TOKEN"]
@@ -121,7 +124,9 @@ def get_sheet():
 
 
 def save_sales_data(date_str: str, baskets_text: str, total: int, sold: int, unsold_numbers: str, notes: str):
+    logger.info(f"Saving sales data: {date_str}, {sold}/{total}")
     sheet = get_sheet()
+    logger.info("Got sheet successfully")
     try:
         date = datetime.strptime(f"{date_str}.{datetime.now().year}", "%d.%m.%Y")
     except Exception:
@@ -139,6 +144,7 @@ def save_sales_data(date_str: str, baskets_text: str, total: int, sold: int, uns
         baskets_text[:500],
         notes
     ])
+    logger.info("Row appended successfully!")
 
 
 def get_analytics_data() -> str:
@@ -401,7 +407,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         baskets = context.bot_data.get(f"baskets_{NADIA_CHAT_ID}", "нет данных")
 
         try:
-            await asyncio.to_thread(save_sales_data, date_str, baskets, total, sold, unsold, notes)
+            try:
+                await asyncio.to_thread(save_sales_data, date_str, baskets, total, sold, unsold, notes)
+                logger.info("Sales data saved OK")
+            except Exception as sheet_err:
+                logger.error(f"Sheet error: {sheet_err}", exc_info=True)
+                await message.reply_text(f"⚠️ Данные приняты, но ошибка записи в таблицу: {sheet_err}")
             context.user_data["state"] = None
             await message.reply_text(
                 f"✅ Данные сохранены!\n\n"
