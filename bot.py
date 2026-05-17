@@ -470,6 +470,28 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+async def cmd_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить пользователя вручную: /adduser 123456789"""
+    if update.effective_chat.id != ADMIN_ID:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: /adduser 123456789")
+        return
+    try:
+        uid = int(args[0])
+        authorized = load_authorized()
+        authorized.add(uid)
+        save_authorized(authorized)
+        await update.message.reply_text(f"✅ Пользователь {uid} добавлен!")
+        try:
+            await context.bot.send_message(chat_id=uid, text="✅ Тебе разрешён доступ к боту! Можешь пересылать отчёты.\n\n/help — список команд")
+        except Exception:
+            pass
+    except ValueError:
+        await update.message.reply_text("❌ Неверный ID.")
+
+
 async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отозвать доступ: /revoke 123456789"""
     if update.effective_chat.id != ADMIN_ID:
@@ -722,6 +744,7 @@ def main():
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("users", cmd_users))
     app.add_handler(CommandHandler("revoke", cmd_revoke))
+    app.add_handler(CommandHandler("adduser", cmd_adduser))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
