@@ -729,14 +729,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == WAITING_FOR_FIX:
         fix_request = message.text or ""
         current_baskets = context.bot_data.get(f"baskets_{NADIA_CHAT_ID}", "")
-        await message.reply_text("⏳ Исправляю, подожди секунду...")
+        if not current_baskets:
+            await message.reply_text("❌ Не нашла корзины для исправления. Перешли отчёт заново.")
+            context.user_data["state"] = None
+            return
+        status_msg = await message.reply_text("⏳ Исправляю, подожди секунду...")
         try:
-            new_baskets = await asyncio.to_thread(fix_baskets, current_baskets, fix_request)
+            new_baskets = await asyncio.wait_for(
+                asyncio.to_thread(fix_baskets, current_baskets, fix_request),
+                timeout=120
+            )
+        except asyncio.TimeoutError:
+            await status_msg.edit_text("❌ Превышено время ожидания. Попробуй ещё раз.")
+            context.user_data["state"] = None
+            return
         except Exception as e:
-            await message.reply_text(f"❌ Ошибка: {e}")
+            await status_msg.edit_text(f"❌ Ошибка: {e}")
+            context.user_data["state"] = None
             return
         context.bot_data[f"baskets_{NADIA_CHAT_ID}"] = new_baskets
         context.user_data["state"] = None
+        await status_msg.delete()
         await send_preview(context, new_baskets)
         return
 
@@ -830,10 +843,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "fix":
         context.user_data["state"] = WAITING_FOR_FIX
-        await query.edit_message_text(
-            "✏️ Напиши что нужно исправить:\n\n"
-            "Например: «убери одну корзину с тартином»"
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✏️ Напиши что нужно исправить:\n\n"
+                 "Например: «убери одну корзину с тартином»"
         )
+        return
 
     elif query.data == "cancel":
         context.bot_data.pop(f"baskets_{NADIA_CHAT_ID}", None)
