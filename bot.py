@@ -154,6 +154,80 @@ def clean_markdown(text: str) -> str:
     return text.strip()
 
 
+def parse_inventory(report_text: str) -> dict:
+    """Парсит остатки из отчёта бариста"""
+    import re
+    inventory = {}
+    # Маппинг названий из отчёта на стандартные
+    name_map = {
+        'cimet': 'Cimet', 'sir': 'Sir',
+        'brioš karamel': 'Brioš karamel', 'brioš karame': 'Brioš karamel',
+        'brioš zemička': 'Brioš zemička', 'brioš zemica': 'Brioš zemička',
+        'babka čoko': 'Babka čoko', 'babka coko': 'Babka čoko',
+        'babka sa karamelom': 'Babka sa karamelom',
+        'mak': 'Mak', 'tartin': 'Tartin',
+        'hleb sa semenkama': 'Hleb sa semenkama',
+        'brios (hleb)': 'Brios (Hleb)', 'brios hleb': 'Brios (Hleb)',
+        'raženi': 'Raženi', 'razeni': 'Raženi',
+        'fokača': 'Fokača', 'fokaca': 'Fokača',
+        'banana': 'Banana', 'čokokeks': 'Čokokeks', 'cokokeks': 'Čokokeks',
+    }
+    lines = report_text.lower().split('\n')
+    for line in lines:
+        line = line.strip().rstrip(',')
+        for key, standard in name_map.items():
+            pattern = rf'{re.escape(key)}[:\s]+([\d]+)'
+            m = re.search(pattern, line)
+            if m:
+                inventory[standard] = int(m.group(1))
+                break
+    return inventory
+
+
+def check_inventory_in_baskets(baskets_text: str, inventory: dict) -> list:
+    """Проверяет не превышены ли остатки в корзинах. Возвращает список ошибок."""
+    import re
+    errors = []
+    used = {}
+
+    name_map = {
+        'cimet': 'Cimet', 'sir': 'Sir',
+        'brioš karamel': 'Brioš karamel',
+        'brioš zemička': 'Brioš zemička',
+        'babka čoko': 'Babka čoko',
+        'babka sa karamelom': 'Babka sa karamelom',
+        'mak': 'Mak', 'tartin': 'Tartin',
+        'hleb sa semenkama': 'Hleb sa semenkama',
+        'brios (hleb)': 'Brios (Hleb)', 'brios hleb': 'Brios (Hleb)',
+        'raženi': 'Raženi', 'razeni': 'Raženi',
+        'fokača': 'Fokača', 'fokaca': 'Fokača',
+        'banana': 'Banana', 'čokokeks': 'Čokokeks',
+    }
+
+    lines = baskets_text.lower().split('\n')
+    for line in lines:
+        line = line.strip()
+        for key, standard in name_map.items():
+            # Ищем "Название ×N" или "Название x N"
+            pattern_mult = rf'{re.escape(key)}[^\n]*[×x](\d+)'
+            m = re.search(pattern_mult, line)
+            if m:
+                used[standard] = used.get(standard, 0) + int(m.group(1))
+                break
+            # Ищем просто "Название" без множителя = 1 штука
+            pattern_single = rf'^[•\-]\s*{re.escape(key)}(?:\s|$)'
+            if re.search(pattern_single, line):
+                used[standard] = used.get(standard, 0) + 1
+                break
+
+    for product, count in used.items():
+        available = inventory.get(product, 0)
+        if count > available:
+            errors.append(f"❌ {product}: использовано {count}, а в остатке только {available}")
+
+    return errors
+
+
 def save_sales_data(date_str: str, baskets_text: str, total: int, sold: int, unsold_numbers: str, notes: str):
     logger.info(f"Saving sales data: {date_str}, {sold}/{total}")
     sheet = get_sheet()
@@ -242,7 +316,13 @@ def generate_baskets(report_text: str) -> str:
     response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=2000,
-        messages=[{"role": "user", "content": f"{prompt}\n\nОстатки из отчёта:\n\n{report_text}\n\nСоставь корзины."}]
+        messages=[{"role": "user", "content": (
+            f"{prompt}\n\nОстатки из отчёта:\n\n{report_text}\n\n"
+            f"Составь корзины. ВАЖНО по математике:\n"
+            f"- Считай точно: если Tartin 10 и ты кладёшь по 1 в 6 корзин = использовано 6, остаток 4\n"
+            f"- Перед финальными остатками пересчитай каждую позицию вручную\n"
+            f"- Никогда не пиши что позиция использована если остаток > 0"
+        )}]
     )
     return response.content[0].text
 
@@ -253,7 +333,17 @@ def fix_baskets(current_baskets: str, fix_request: str) -> str:
     response = client.messages.create(
         model="claude-opus-4-5",
         max_tokens=2000,
-        messages=[{"role": "user", "content": f"{prompt}\n\nВот текущий вариант корзин:\n\n{current_baskets}\n\nНужно исправить: {fix_request}\n\nВерни полный обновлённый текст корзин."}]
+        messages=[{"role": "user", "content": (
+            f"{prompt}\n\n"
+            f"Вот уже готовые корзины которые нужно ИСПРАВИТЬ (не пересобирать заново!):\n\n{current_baskets}\n\n"
+            f"Что нужно изменить: {fix_request}\n\n"
+            f"ВАЖНО:\n"
+            f"- Не пересобирай корзины заново с нуля\n"
+            f"- Внеси только запрошенные изменения\n"
+            f"- Сохрани все остальные корзины без изменений\n"
+            f"- Пересчитай остатки точно: вычти из каждой позиции столько штук сколько использовано во ВСЕХ корзинах\n"
+            f"- Верни полный текст всех корзин с исправлениями"
+        )}]
     )
     return response.content[0].text
 
@@ -667,7 +757,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(f"❌ Ошибка при генерации: {e}")
         return
 
+    # Проверяем остатки
+    inventory = parse_inventory(report)
+    if inventory:
+        errors = check_inventory_in_baskets(baskets, inventory)
+        if errors:
+            error_text = "\n".join(errors)
+            baskets += f"\n\n⚠️ Обнаружены ошибки в остатках:\n{error_text}\n\nРекомендую нажать ✏️ Исправить."
+
     context.bot_data[f"baskets_{NADIA_CHAT_ID}"] = baskets
+    context.bot_data[f"inventory_{NADIA_CHAT_ID}"] = inventory
     await send_preview(context, baskets)
 
 
