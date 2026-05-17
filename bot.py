@@ -412,13 +412,13 @@ def get_preview_keyboard():
 
 
 async def send_preview(context, baskets: str):
-    preview = f"📋 Предпросмотр корзин:\n\n{baskets}"
+    baskets_clean = strip_html(baskets)
+    preview = f"📋 Предпросмотр корзин:\n\n{baskets_clean}"
     if len(preview) > 4000:
         preview = preview[:4000] + "\n\n(обрезано для предпросмотра)"
     await context.bot.send_message(
         chat_id=NADIA_CHAT_ID,
         text=preview,
-        parse_mode="HTML",
         reply_markup=get_preview_keyboard()
     )
 
@@ -830,7 +830,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id=NJUPPA_CHAT_ID,
                 text=baskets,
-                parse_mode="HTML",
                 message_thread_id=NJUPPA_THREAD_ID
             )
             await query.edit_message_text(
