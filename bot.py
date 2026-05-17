@@ -339,6 +339,7 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
     """Проверяет авторизацию и отправляет запрос если нет доступа. Возвращает True если авторизован."""
     message = update.effective_message
     user_id = message.chat.id
+    logger.info(f"check_auth: user_id={user_id}, authorized={is_authorized(user_id)}, all={load_authorized()}")
     user_name = message.chat.first_name or ""
     user_username = message.chat.username or ""
 
@@ -378,8 +379,7 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
 async def cmd_getprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context):
         return
-    if update.effective_chat.id != NADIA_CHAT_ID:
-        return
+    
     prompt = load_prompt()
     if len(prompt) > 4000:
         prompt = prompt[:4000] + "\n\n(обрезано)"
@@ -389,8 +389,7 @@ async def cmd_getprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_setprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context):
         return
-    if update.effective_chat.id != NADIA_CHAT_ID:
-        return
+    
     context.user_data["state"] = WAITING_FOR_NEW_PROMPT
     await update.message.reply_text(
         "📝 Отправь новый промт следующим сообщением.\n\n"
@@ -403,8 +402,7 @@ async def cmd_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Записать данные о продажах за день"""
     if not await check_auth(update, context):
         return
-    if update.effective_chat.id != NADIA_CHAT_ID:
-        return
+    
     context.user_data["state"] = WAITING_FOR_SALES
     await update.message.reply_text(
         "📊 Введи данные о продажах в формате:\n\n"
@@ -419,8 +417,7 @@ async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Получить аналитику продаж"""
     if not await check_auth(update, context):
         return
-    if update.effective_chat.id != NADIA_CHAT_ID:
-        return
+    
     await update.message.reply_text("⏳ Анализирую данные, подожди...")
     try:
         data = await asyncio.to_thread(get_analytics_data)
@@ -440,8 +437,7 @@ async def cmd_rebuild(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Экстренная пересборка корзин"""
     if not await check_auth(update, context):
         return
-    if update.effective_chat.id != NADIA_CHAT_ID:
-        return
+    
     context.user_data["state"] = WAITING_FOR_REBUILD
     await update.message.reply_text(
         "🔄 Что продали внеурочно? Напиши в формате:\n\n"
@@ -453,8 +449,7 @@ async def cmd_rebuild(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update, context):
         return
-    if update.effective_chat.id != NADIA_CHAT_ID:
-        return
+    
     context.user_data["state"] = None
     await update.message.reply_text("🚫 Отменено.")
 
@@ -517,9 +512,21 @@ async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Неверный ID пользователя.")
 
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != NADIA_CHAT_ID:
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Приветствие"""
+    user_id = update.effective_chat.id
+    logger.info(f"START from user_id={user_id}, authorized={is_authorized(user_id)}")
+    if not await check_auth(update, context):
         return
+    await update.message.reply_text(
+        "👋 Привет! Я NjuppaHelperBot.\n\n"
+        "Перешли мне отчёт с остатками — составлю корзины.\n\n"
+        "/help — список всех команд"
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    
     await update.message.reply_text(
         "🤖 Команды бота:\n\n"
         "Перешли отчёт с остатками — бот составит корзины\n\n"
@@ -541,7 +548,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
 
-    if message.chat.type != "private" or message.chat.id != NADIA_CHAT_ID:
+    # Только авторизованные пользователи в личке
+    if message.chat.type != "private":
         return
 
     if not await check_auth(update, context):
@@ -736,6 +744,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("getprompt", cmd_getprompt))
     app.add_handler(CommandHandler("setprompt", cmd_setprompt))
     app.add_handler(CommandHandler("rebuild", cmd_rebuild))
