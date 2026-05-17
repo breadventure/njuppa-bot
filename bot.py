@@ -428,7 +428,14 @@ def get_preview_keyboard():
 
 async def send_preview(context, baskets: str):
     baskets_clean = strip_html(baskets)
-    preview = f"📋 Предпросмотр корзин:\n\n{baskets_clean}"
+    # Показываем исходные остатки в шапке
+    inventory = context.bot_data.get(f"inventory_{NADIA_CHAT_ID}", {})
+    if inventory:
+        inv_lines = "\n".join(f"- {k}: {v}" for k, v in inventory.items() if v > 0)
+        header = f"📦 Исходные остатки:\n{inv_lines}\n\n─────────────\n\n"
+    else:
+        header = ""
+    preview = f"📋 Предпросмотр корзин:\n\n{header}{baskets_clean}"
     if len(preview) > 4000:
         preview = preview[:4000] + "\n\n(обрезано для предпросмотра)"
     await context.bot.send_message(
@@ -748,10 +755,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text("❌ Не нашла корзины для исправления. Перешли отчёт заново.")
             context.user_data["state"] = None
             return
+        history = context.bot_data.get(f"fix_history_{NADIA_CHAT_ID}", None)
         status_msg = await message.reply_text("⏳ Исправляю, подожди секунду...")
         try:
             new_baskets = await asyncio.wait_for(
-                asyncio.to_thread(fix_baskets, current_baskets, fix_request),
+                asyncio.to_thread(fix_baskets, current_baskets, fix_request, history),
                 timeout=120
             )
         except asyncio.TimeoutError:
@@ -762,6 +770,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(f"❌ Ошибка: {e}")
             context.user_data["state"] = None
             return
+
+        # Обновляем историю для следующей правки
+        prompt = load_prompt()
+        if not history:
+            new_history = [
+                {"role": "user", "content": f"{prompt}\n\nВот готовые корзины:\n\n{current_baskets}"},
+                {"role": "assistant", "content": current_baskets},
+                {"role": "user", "content": f"Внеси только это изменение: {fix_request}"},
+                {"role": "assistant", "content": new_baskets},
+            ]
+        else:
+            new_history = history + [
+                {"role": "user", "content": f"Внеси только это изменение: {fix_request}"},
+                {"role": "assistant", "content": new_baskets},
+            ]
+        context.bot_data[f"fix_history_{NADIA_CHAT_ID}"] = new_history
         context.bot_data[f"baskets_{NADIA_CHAT_ID}"] = new_baskets
         context.user_data["state"] = None
         await status_msg.delete()
@@ -795,6 +819,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.bot_data[f"baskets_{NADIA_CHAT_ID}"] = baskets
     context.bot_data[f"inventory_{NADIA_CHAT_ID}"] = inventory
+    context.bot_data.pop(f"fix_history_{NADIA_CHAT_ID}", None)
     await send_preview(context, baskets)
 
 
@@ -852,6 +877,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Не забудь в конце дня записать продажи: /sales"
             )
             context.bot_data.pop(f"baskets_{NADIA_CHAT_ID}", None)
+            context.bot_data.pop(f"fix_history_{NADIA_CHAT_ID}", None)
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка публикации: {e}")
 
@@ -867,6 +893,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "cancel":
         context.bot_data.pop(f"baskets_{NADIA_CHAT_ID}", None)
+        context.bot_data.pop(f"fix_history_{NADIA_CHAT_ID}", None)
         context.user_data["state"] = None
         await query.edit_message_text("🚫 Отменено.")
 
