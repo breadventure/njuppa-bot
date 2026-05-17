@@ -204,21 +204,36 @@ def check_inventory_in_baskets(baskets_text: str, inventory: dict) -> list:
         'banana': 'Banana', 'čokokeks': 'Čokokeks',
     }
 
-    lines = baskets_text.lower().split('\n')
-    for line in lines:
-        line = line.strip()
-        for key, standard in name_map.items():
-            # Ищем "Название ×N" или "Название x N"
-            pattern_mult = rf'{re.escape(key)}[^\n]*[×x](\d+)'
-            m = re.search(pattern_mult, line)
-            if m:
-                used[standard] = used.get(standard, 0) + int(m.group(1))
-                break
-            # Ищем просто "Название" без множителя = 1 штука
-            pattern_single = rf'^[•\-]\s*{re.escape(key)}(?:\s|$)'
-            if re.search(pattern_single, line):
-                used[standard] = used.get(standard, 0) + 1
-                break
+    # Разбиваем текст на блоки корзин
+    # Ищем Količina чтобы знать множитель каждой корзины
+    basket_blocks = re.split(r'(?=#\d+\s)', baskets_text, flags=re.IGNORECASE)
+    if len(basket_blocks) <= 1:
+        basket_blocks = re.split(r'_____+', baskets_text)
+
+    for block in basket_blocks:
+        # Узнаём множитель (Količina: X korpe/korpa)
+        mult_match = re.search(r'koli[cč]ina[:\s]+(\d+)', block, re.IGNORECASE)
+        multiplier = int(mult_match.group(1)) if mult_match else 1
+
+        lines = block.lower().split('\n')
+        for line in lines:
+            line = line.strip()
+            # Пропускаем строки с Ukupno и Količina
+            if 'ukupno' in line or 'koli' in line:
+                continue
+            for key, standard in name_map.items():
+                # Ищем "- Название ×N"
+                pattern_mult = rf'^[-•]\s*{re.escape(key)}[^\n]*[×x](\d+)'
+                m = re.search(pattern_mult, line)
+                if m:
+                    qty = int(m.group(1)) * multiplier
+                    used[standard] = used.get(standard, 0) + qty
+                    break
+                # Ищем "- Название" без множителя = 1 штука × multiplier
+                pattern_single = rf'^[-•]\s*{re.escape(key)}(?:\s|$|,)'
+                if re.search(pattern_single, line):
+                    used[standard] = used.get(standard, 0) + multiplier
+                    break
 
     for product, count in used.items():
         available = inventory.get(product, 0)
