@@ -147,6 +147,30 @@ def is_allowed(uid: int) -> bool:
     return uid == ADMIN_CHAT_ID or str(uid) in STATE["users"]
 
 
+def user_name(uid) -> str:
+    """Старый формат хранил строку, новый — словарь. Понимаем оба."""
+    v = STATE["users"].get(str(uid))
+    if isinstance(v, dict):
+        return v.get("name") or str(uid)
+    return v or str(uid)
+
+
+def get_baskets(uid):
+    return STATE.setdefault("baskets", {}).get(str(uid), "")
+
+
+def get_report(uid):
+    return STATE.setdefault("reports", {}).get(str(uid), "")
+
+
+def set_baskets(uid, baskets=None, report=None):
+    if baskets is not None:
+        STATE.setdefault("baskets", {})[str(uid)] = baskets
+    if report is not None:
+        STATE.setdefault("reports", {})[str(uid)] = report
+    save_state(STATE)
+
+
 def get_prompt() -> str:
     return STATE.get("prompt") or DEFAULT_PROMPT
 
@@ -267,19 +291,19 @@ def preview_keyboard():
 
 def access_keyboard(uid: int):
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Пустить", callback_data=f"approve:{uid}"),
+        InlineKeyboardButton("✅ Пустить как баристу", callback_data=f"approve:{uid}"),
         InlineKeyboardButton("❌ Отказать", callback_data=f"deny:{uid}"),
     ]])
 
 
-async def send_preview(context, baskets: str, note: str = ""):
+async def send_preview(context, chat_id: int, baskets: str, note: str = ""):
     preview = "📋 Предпросмотр корзин:\n\n" + baskets
     if note:
         preview += "\n\n" + note
     if len(preview) > 4000:
         preview = preview[:4000] + "\n\n(обрезано для предпросмотра)"
     await context.bot.send_message(
-        chat_id=ADMIN_CHAT_ID, text=preview, reply_markup=preview_keyboard()
+        chat_id=chat_id, text=preview, reply_markup=preview_keyboard()
     )
 
 
@@ -316,7 +340,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
     t = ("Что умею:\n\n"
-         "📤 Пришли отчёт по остаткам — соберу корзины и отправлю Светлане на проверку.\n\n"
+         "📤 Пришли отчёт по остаткам — соберу корзины.\n"
+         "Под сборкой кнопки: опубликовать, исправить, пересобрать.\n\n"
          "/rebuild — пересобрать. Продали что-то внеурочно или целую корзину —\n"
          "  напиши что именно, пересоберу остальное.\n"
          "/getprompt — показать правила сборки\n"
@@ -335,7 +360,7 @@ async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not STATE["users"]:
         await update.message.reply_text("Пока никого. Пусть напишут боту /start.")
         return
-    lines = [f"• {name} — {uid}" for uid, name in STATE["users"].items()]
+    lines = [f"• {user_name(u)} — {u} (бариста)" for u in STATE["users"]]
     await update.message.reply_text("Доступ есть у:\n" + "\n".join(lines))
 
 
@@ -346,10 +371,11 @@ async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Напиши так: /revoke 5525613586")
         return
     uid = context.args[0]
-    name = STATE["users"].pop(uid, None)
-    if name is None:
+    if uid not in STATE["users"]:
         await update.message.reply_text("Такого ID нет в списке.")
         return
+    name = user_name(uid)
+    STATE["users"].pop(uid, None)
     save_state(STATE)
     await update.message.reply_text(f"Доступ забрала: {name} ({uid})")
 
@@ -357,7 +383,7 @@ async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_rebuild(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
-    if not STATE.get("baskets"):
+    if not get_baskets(update.effective_user.id):
         await update.message.reply_text(
             "Нечего пересобирать — корзин ещё не было. Сначала пришли отчёт."
         )
@@ -429,31 +455,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⏳ Исправляю...")
         try:
             new = await asyncio.to_thread(
-                fix_baskets, STATE.get("baskets", ""), message.text or "")
+                fix_baskets, get_baskets(uid), message.text or "")
         except Exception as e:
             await message.reply_text(f"❌ Ошибка: {e}")
             return
-        STATE["baskets"] = new
-        save_state(STATE)
+        set_baskets(uid, baskets=new)
         context.user_data["state"] = None
-        await send_preview(context, new)
+        await send_preview(context, uid, new)
         return
 
     if state == WAITING_FOR_REBUILD:
         await message.reply_text("⏳ Пересобираю...")
         try:
             new = await asyncio.to_thread(
-                rebuild_baskets, STATE.get("baskets", ""),
-                STATE.get("report", ""), message.text or "")
+                rebuild_baskets, get_baskets(uid), get_report(uid), message.text or "")
         except Exception as e:
             await message.reply_text(f"❌ Ошибка: {e}")
             return
-        STATE["baskets"] = new
-        save_state(STATE)
+        set_baskets(uid, baskets=new)
         context.user_data["state"] = None
-        if uid != ADMIN_CHAT_ID:
-            await message.reply_text("✅ Пересобрала, отправила Светлане на проверку.")
-        await send_preview(context, new, "🔄 Это пересборка после продаж в пекарне.")
+        await send_preview(context, uid, new, "🔄 Пересборка после продаж в пекарне.")
         return
 
     report = extract_report_text(message)
@@ -471,15 +492,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(f"❌ Ошибка при генерации: {e}")
         return
 
-    STATE["baskets"], STATE["report"] = baskets, report
-    save_state(STATE)
+    set_baskets(uid, baskets=baskets, report=report)
 
     problems = check_inventory_in_baskets(baskets, parse_inventory(report))
     note = "⚠️ Проверка остатков не сошлась:\n• " + "\n• ".join(problems) if problems else ""
 
-    if uid != ADMIN_CHAT_ID:
-        await message.reply_text("✅ Приняла, отправила Светлане на проверку.")
-    await send_preview(context, baskets, note)
+    await send_preview(context, uid, baskets, note)
 
 
 # ── КНОПКИ ───────────────────────────────────────────────────────────────────
@@ -500,16 +518,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name = chat.full_name or chat.username or uid
             except Exception:
                 name = uid
-            STATE["users"][uid] = name
+            STATE["users"][uid] = {"name": name, "role": "barista"}
             ok = save_state(STATE)
             await query.edit_message_text(
-                f"✅ Доступ выдан: {name} ({uid})"
+                f"✅ Доступ выдан (бариста): {name} ({uid})"
                 + ("" if ok else "\n⚠️ Не сохранилось на диск — слетит при перезапуске.")
             )
             try:
                 await context.bot.send_message(
                     int(uid),
-                    "✅ Доступ открыт! Присылай отчёт по остаткам — соберу корзины.\n"
+                    "✅ Доступ открыт!\n\n"
+                    "Присылай отчёт по остаткам — соберу корзины.\n"
+                    "Кнопки под сборкой твои: можешь править, пересобирать "
+                    "и публиковать в Njuppa.\n\n"
                     "/help — что ещё умею"
                 )
             except Exception:
@@ -522,10 +543,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # ── корзины
-    if query.from_user.id != ADMIN_CHAT_ID:
+    # ── корзины: публикует любой, у кого есть доступ
+    uid = query.from_user.id
+    if not is_allowed(uid):
         return
-    baskets = STATE.get("baskets")
+    baskets = get_baskets(uid)
 
     if data == "publish":
         if not baskets:
@@ -537,6 +559,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_thread_id=NJUPPA_THREAD_ID
             )
             await query.edit_message_text("✅ Опубликовано в Njuppa!")
+            if uid != ADMIN_CHAT_ID:
+                try:
+                    await context.bot.send_message(
+                        ADMIN_CHAT_ID,
+                        f"📤 {user_name(uid)} опубликовала корзины в Njuppa."
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             await query.edit_message_text(f"❌ Ошибка публикации: {e}")
 
@@ -555,7 +585,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "cancel":
-        STATE.pop("baskets", None)
+        STATE.setdefault("baskets", {}).pop(str(uid), None)
         save_state(STATE)
         context.user_data["state"] = None
         await query.edit_message_text("🚫 Отменено. Корзины не опубликованы.")
