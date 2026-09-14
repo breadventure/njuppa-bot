@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -519,9 +520,12 @@ def fix_baskets(current: str, fix_request: str, report: str = "") -> str:
 
 
 def rebuild_baskets(current: str, report: str, sold: str) -> str:
+    head = (f"Исходный отчёт по остаткам был такой:\n\n{report}\n\n" if report else
+            "Исходного отчёта по остаткам нет. Считай, что доступно ровно то, "
+            "что перечислено в корзинах ниже.\n\n")
     return ask_ai(get_prompt(), (
-        f"Исходный отчёт по остаткам был такой:\n\n{report}\n\n"
-        f"По нему были собраны корзины:\n\n{current}\n\n"
+        head +
+        f"Текущие корзины:\n\n{current}\n\n"
         f"Но за день часть продалась прямо в пекарне:\n{sold}\n\n"
         f"Пересобери корзины с учётом того, что этих позиций больше нет. "
         f"Если продана целая корзина — её позиции считаются ушедшими и в новый "
@@ -555,9 +559,13 @@ async def send_preview(context, chat_id: int, baskets: str, note: str = ""):
         preview += "\n\n" + note
     if len(preview) > 4000:
         preview = preview[:4000] + "\n\n(обрезано для предпросмотра)"
-    await context.bot.send_message(
+    msg = await context.bot.send_message(
         chat_id=chat_id, text=preview, reply_markup=preview_keyboard()
     )
+    # активным считается только последний предпросмотр
+    STATE.setdefault("active_preview", {})[str(chat_id)] = msg.message_id
+    save_state(STATE)
+    return msg
 
 
 async def request_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -743,6 +751,26 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── ОСНОВНОЙ ОБРАБОТЧИК ──────────────────────────────────────────────────────
 
+def extract_baskets_text(message) -> str | None:
+    """Готовые корзины, собранные где-то ещё: пересланные или вставленные."""
+    text = message.text or message.caption or ""
+    if len(text) < 80:
+        return None
+    low = text.lower()
+    hits = 0
+    if "🧺" in text:
+        hits += 1
+    if "njuppa" in low:
+        hits += 1
+    if re.search(r"koli[čc]ina\s*:", low):
+        hits += 1
+    if re.search(r"ukupno\s*:", low):
+        hits += 1
+    if re.search(r"korp[aei]", low):
+        hits += 1
+    return text if hits >= 2 else None
+
+
 def extract_report_text(message) -> str | None:
     text = message.text or message.caption or ""
     markers = ("Količina po vrstama", "Osnovni asortiman", "Cimet:", "Datum:")
@@ -816,10 +844,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     report = extract_report_text(message)
+
+    # чужая сборка: взяли в работу, дальше можно править и пересобирать
     if not report:
+        outside = extract_baskets_text(message)
+        if outside:
+            set_baskets(uid, baskets=outside, report="")
+            await send_preview(
+                context, uid, outside,
+                "📥 Взяла в работу готовую сборку.\n"
+                "Остатков к ней нет, поэтому при пересборке опирайся на состав корзин: "
+                "напиши, что ушло, и я пересчитаю остальное."
+            )
+            return
+
         await message.reply_text(
-            "Не похоже на отчёт по остаткам 🤔\n"
-            "Перешли сообщение с остатками из чата барист."
+            "Не похоже ни на отчёт по остаткам, ни на готовые корзины 🤔\n\n"
+            "Перешли отчёт из чата барист — соберу с нуля.\n"
+            "Или пришли готовые корзины — возьму их в работу и смогу править."
         )
         return
 
@@ -888,6 +930,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     if not is_allowed(uid):
         return
+
+    # кнопки старого предпросмотра не работают
+    active = STATE.get("active_preview", {}).get(str(uid))
+    if active and query.message and query.message.message_id != active:
+        await query.answer(
+            "Это старый предпросмотр. Работай с последним сообщением.",
+            show_alert=True
+        )
+        return
+
+    # защита от двойного нажатия и от дубля при двух деплоях
+    seen = context.bot_data.setdefault("_seen_clicks", {})
+    click_id = f"{uid}:{query.message.message_id if query.message else 0}:{data}"
+    now = time.time()
+    for k, t in list(seen.items()):
+        if now - t > 30:
+            seen.pop(k, None)
+    if click_id in seen:
+        return
+    seen[click_id] = now
+
     baskets = get_baskets(uid)
 
     if data == "publish":
@@ -900,6 +963,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_thread_id=NJUPPA_THREAD_ID
             )
             await query.edit_message_text("✅ Опубликовано в Njuppa!")
+            STATE.setdefault("active_preview", {}).pop(str(uid), None)
+            save_state(STATE)
             for mid in managers():
                 if mid == uid:
                     continue
@@ -928,6 +993,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "cancel":
         STATE.setdefault("baskets", {}).pop(str(uid), None)
+        STATE.setdefault("active_preview", {}).pop(str(uid), None)
         save_state(STATE)
         context.user_data["state"] = None
         await query.edit_message_text("🚫 Отменено. Корзины не опубликованы.")
