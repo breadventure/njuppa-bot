@@ -212,30 +212,72 @@ def parse_inventory(report_text: str) -> dict:
 
 
 def check_inventory_in_baskets(baskets: str, stock: dict) -> list:
+    """Считает позиции ТОЛЬКО в готовом тексте корзин, черновик игнорирует."""
     if not stock:
         return []
-    used, qty = {}, 1
-    for line in baskets.splitlines():
-        km = re.search(r"Koli[čc]ina\s*:\s*(\d+)", line, re.I)
+
+    # всё до первой 🧺 — это черновик и рассуждения, их не считаем
+    i = baskets.find("🧺")
+    if i == -1:
+        return []
+    body = baskets[i:]
+
+    SKIP_WORDS = ("ukupno", "puna cena", "njuppa cena", "količina", "kolicina",
+                  "cena", "ako ne možete", "možete zamrznuti", "zamrzavati",
+                  "čuvati", "korpa", "korpe", "всего", "остат", "использ")
+
+    used, qty, pending = {}, 1, {}
+    for raw in body.splitlines():
+        line = raw.strip().strip("-–— ").strip()
+        if not line:
+            continue
+
+        low = line.lower()
+
+        # конец блока корзины: фиксируем количество и переносим в общий счёт
+        km = re.search(r"koli[čc]ina\s*:\s*\D*(\d+)", low)
         if km:
             qty = int(km.group(1))
+            for k, v in pending.items():
+                used[k] = used.get(k, 0) + v * qty
+            pending, qty = {}, 1
             continue
-        im = re.match(r"\s*[•\-\*]\s*(.+?)(?:\s*[×xX]\s*(\d+))?\s*$", line)
-        if not im:
+
+        # новая корзина: то, что не успели умножить, считаем по одной
+        if line.startswith("🧺"):
+            for k, v in pending.items():
+                used[k] = used.get(k, 0) + v
+            pending = {}
             continue
-        name = im.group(1).strip().lower()
-        n = int(im.group(2) or 1)
-        used[name] = used.get(name, 0) + n * qty
+
+        if any(w in low for w in SKIP_WORDS) or line[0] in "❄️🧀🧊📞✨🌸":
+            continue
+        if ":" in line or len(line) > 45:
+            continue
+
+        m = re.match(r"^(.+?)(?:\s*[×xX*]\s*(\d+))?$", line)
+        if not m:
+            continue
+        name = re.sub(r"\((ohla[đd]en[ao]?)\)", "", m.group(1), flags=re.I)
+        name = name.strip(" .,·•").lower()
+        if len(name) < 3:
+            continue
+        pending[name] = pending.get(name, 0) + int(m.group(2) or 1)
+
+    for k, v in pending.items():
+        used[k] = used.get(k, 0) + v
 
     problems = []
     for name, n in used.items():
         have = None
         for k, v in stock.items():
-            if k in name or name in k:
+            if k == name or k in name or name in k:
                 have = v
                 break
-        if have is not None and n > have:
-            problems.append(f"{name}: разложено {n}, а в остатках {have}")
+        if have is None:
+            continue
+        if n > have:
+            problems.append(f"{name}: разложено {n}, в остатках {have}")
     return problems
 
 
@@ -263,16 +305,26 @@ def ask_ai(system_prompt: str, user_text: str) -> str:
         return clean_markdown(r.choices[0].message.content or "")
 
 
+FORMAT_REMINDER = (
+    "\n\nФормат готового текста соблюдай ТОЧНО, как задано в промте:\n"
+    "• строка Ukupno: XXXX RSD → XXXX RSD (60%) — именно так, не «Puna cena»\n"
+    "• строка Količina: 1️⃣ korpa / 2️⃣ korpe с цифрой-эмодзи\n"
+    "• телефонный блок 📞 повторяется в КАЖДОЙ корзине дословно\n"
+    "• заголовок 🌸 NJUPPA DD.MM 🌸 с датой публикации"
+)
+
+
 def generate_baskets(report_text: str) -> str:
     return ask_ai(get_prompt(),
-                  f"Остатки из отчёта:\n\n{report_text}\n\nСоставь корзины.")
+                  f"Остатки из отчёта:\n\n{report_text}\n\n"
+                  f"Составь корзины." + FORMAT_REMINDER)
 
 
 def fix_baskets(current: str, fix_request: str) -> str:
     return ask_ai(get_prompt(), (
         f"Вот текущий вариант корзин:\n\n{current}\n\n"
         f"Нужно исправить: {fix_request}\n\n"
-        f"Верни полный обновлённый текст корзин."
+        f"Верни полный обновлённый текст корзин." + FORMAT_REMINDER
     ))
 
 
@@ -284,7 +336,7 @@ def rebuild_baskets(current: str, report: str, sold: str) -> str:
         f"Пересобери корзины с учётом того, что этих позиций больше нет. "
         f"Если продана целая корзина — её позиции считаются ушедшими и в новый "
         f"расклад не попадают. Нумерацию начни заново с #1. "
-        f"Верни полный новый текст корзин."
+        f"Верни полный новый текст корзин." + FORMAT_REMINDER
     ))
 
 
