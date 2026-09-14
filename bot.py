@@ -23,6 +23,8 @@ DATA_DIR  = os.environ.get("DATA_DIR", "/data")
 DATA_FILE = os.path.join(DATA_DIR, "njuppa_state.json")
 # ─────────────────────────────────────────────────────────────────────────────
 
+AI_TIMEOUT = int(os.environ.get("AI_TIMEOUT", "180"))   # секунд на ответ модели
+
 WAITING_FOR_FIX     = "waiting_for_fix"
 WAITING_FOR_REBUILD = "waiting_for_rebuild"
 WAITING_FOR_PROMPT  = "waiting_for_prompt"
@@ -122,8 +124,16 @@ def load_state() -> dict:
             s = json.load(f)
     except Exception:
         s = {}
-    s.setdefault("users", {})          # {"12345": "Имя"}
+    s.setdefault("users", {})
     s.setdefault("prompt", DEFAULT_PROMPT)
+
+    # миграция со старого формата: раньше корзины и отчёт были общими строками,
+    # теперь у каждого свои. Строку выбрасываем, она всё равно за вчера.
+    for key in ("baskets", "reports", "report"):
+        if not isinstance(s.get(key), dict):
+            s.pop(key, None)
+    s.setdefault("baskets", {})
+    s.setdefault("reports", {})
     return s
 
 
@@ -322,6 +332,20 @@ async def request_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def run_ai(message, fn, *args):
+    """Ждём модель не дольше AI_TIMEOUT. Возвращает текст или None."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=AI_TIMEOUT)
+    except asyncio.TimeoutError:
+        await message.reply_text(
+            f"⏱ Модель не ответила за {AI_TIMEOUT} секунд.\n"
+            "Попробуй ещё раз. Если повторится — напиши Светлане."
+        )
+    except Exception as e:
+        await message.reply_text(f"❌ Ошибка: {e}")
+    return None
+
+
 # ── КОМАНДЫ ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -453,11 +477,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == WAITING_FOR_FIX:
         await message.reply_text("⏳ Исправляю...")
-        try:
-            new = await asyncio.to_thread(
-                fix_baskets, get_baskets(uid), message.text or "")
-        except Exception as e:
-            await message.reply_text(f"❌ Ошибка: {e}")
+        new = await run_ai(message, fix_baskets, get_baskets(uid), message.text or "")
+        if new is None:
             return
         set_baskets(uid, baskets=new)
         context.user_data["state"] = None
@@ -466,11 +487,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == WAITING_FOR_REBUILD:
         await message.reply_text("⏳ Пересобираю...")
-        try:
-            new = await asyncio.to_thread(
-                rebuild_baskets, get_baskets(uid), get_report(uid), message.text or "")
-        except Exception as e:
-            await message.reply_text(f"❌ Ошибка: {e}")
+        new = await run_ai(message, rebuild_baskets,
+                           get_baskets(uid), get_report(uid), message.text or "")
+        if new is None:
             return
         set_baskets(uid, baskets=new)
         context.user_data["state"] = None
@@ -485,11 +504,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await message.reply_text("⏳ Считаю корзины...")
-    try:
-        baskets = await asyncio.to_thread(generate_baskets, report)
-    except Exception as e:
-        await message.reply_text(f"❌ Ошибка при генерации: {e}")
+    await message.reply_text("⏳ Считаю корзины, это займёт до минуты...")
+    baskets = await run_ai(message, generate_baskets, report)
+    if baskets is None:
         return
 
     set_baskets(uid, baskets=baskets, report=report)
