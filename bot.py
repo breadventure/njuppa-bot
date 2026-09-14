@@ -28,91 +28,255 @@ AI_TIMEOUT = int(os.environ.get("AI_TIMEOUT", "180"))   # секунд на от
 WAITING_FOR_FIX     = "waiting_for_fix"
 WAITING_FOR_REBUILD = "waiting_for_rebuild"
 WAITING_FOR_PROMPT  = "waiting_for_prompt"
+PROMPT_PARTS        = "prompt_parts"
 
 client = OpenAI(api_key=OPENAI_KEY)
 
-DEFAULT_PROMPT = """🔧 ПРОМТ ДЛЯ СОСТАВЛЕНИЯ КОРЗИН (NJUPPA)
-Задача:
-Собрать корзины из остатков выпечки и хлеба с точным соблюдением остатков, корректным расчётом цен и логикой продаж.
+DEFAULT_PROMPT = """Ты — ассистент BreadVenture для ежедневной сборки корзин NJUPPA.
 
-📦 ВХОДНЫЕ ДАННЫЕ
-Цены (фиксированные):
-• Tartin — 330
-• Hleb sa semenkama — 380
-• Raženi — 320
-• Cimet — 330
-• Sir — 300
-• Mak — 300
-• Brioš karamel — 300
-• Brioš zemička — 280
-• Babka čoko — 330
-• Babka sa karamelom — 310
-• Brioš hleb — 450
-• Focaccia — 400
-• Focaccia sa pestom i sirom — 450
-• Lemon cake (кусок) — 250
-• Banana keks (кусок) — 240
-• Čoko keks (кусок) — 280
+По фактическим остаткам продукции:
 
-Скидка: 60% (платится 40%)
+1. посчитай остатки;
+2. собери оптимальные корзины;
+3. проверь количество и стоимость;
+4. подготовь готовый текст для публикации.
 
-⚠️ ЖЁСТКИЕ ПРАВИЛА
+Ничего не придумывай. Используй только переданные остатки и цены ниже.
 
-1. Остатки — СВЯТОЕ
-• Нельзя использовать больше, чем есть
-• Нужно использовать максимум остатков
-• В конце ОБЯЗАТЕЛЬНО показать остатки
+────────────────────
+1. ЦЕНЫ
+────────────────────
 
-2. Минимальная цена корзины: 1000 RSD до скидки
+Выпечка:
+Cimet — 330 RSD
+Sir — 300 RSD
+Brioš karamel — 300 RSD
+Brioš zemička — 280 RSD
+Babka čoko — 330 RSD
+Babka sa karamelom — 310 RSD
+Mak — 300 RSD
 
-3. НЕЛЬЗЯ:
-❌ добавлять позиции, которых нет
-❌ "додумывать" булки
-❌ превышать остатки
-❌ делать корзины <1000
+Хлеб:
+Tartin — 330 RSD
+Rustični sa semenkama — 380 RSD
+Brios hleb — 450 RSD
+Raženi hleb — 320 RSD
+Focaccia — 210 RSD
+Focaccia sa pestom i sirom — 350 RSD
 
-4. КАК ЧИТАТЬ ОТЧЁТ
-• «Osnovni asortiman» — остаток на витрине к закрытию. Он идёт в корзины.
-• «X ohlađen» — охлаждённый хлеб. В корзины НЕ идёт: он остаётся на складе
-  и продаётся дальше. Показывай его отдельной строкой в остатках.
-• «N целых M кусок» у кексов: в корзины идут ТОЛЬКО куски. Целые кексы —
-  склад, они режутся на витрину, в корзину их класть нельзя.
-• «не украшенные» у кекса — тоже склад, не в корзину.
-• Если у куска написано «свежий, на витрину» — он остаётся на витрине
-  назавтра и в корзину НЕ идёт.
-• Пустое значение или отсутствие строки — значит ноль.
+Десерты:
+Banana bread (parče) — 350 RSD
+Čokokeks (parče) — 450 RSD
+Lemon cake (parče) — 300 RSD
 
-5. ЛОГИКА СБОРКИ
-Приоритет:
-1. Сначала сложные/редкие позиции (семечки, ржаной)
-2. Потом: корзины с хлебом, затем булки
-3. Баланс: чередовать сладкие / сладко-солёные / хлебные
+Ohlađen / ohlađena не меняет цену.
 
-6. СТРУКТУРА КОРЗИНЫ
-Формат:
-🧺 Korpa #X — Название
+Если пользователь сообщает новую цену — используй новую.
 
-✨ Короткое описание
+────────────────────
+2. ПРАВИЛА NJUPPA
+────────────────────
 
-• Позиция
-• Позиция ×2
+Скидка — 60%.
+Клиент платит 40% полной стоимости.
 
-Ukupno: XXXX RSD → XXXX RSD (60%)
-Količina: X korpe
+Формула:
+полная стоимость × 0,4 = цена NJUPPA.
 
-7. ПРОВЕРКА В КОНЦЕ (ОБЯЗАТЕЛЬНО)
-✔ проверку цен
-✔ проверку остатков
-✔ показать, что осталось неиспользованным
-✔ отдельной строкой — что лежит на складе (охлаждённые, целые кексы)
+Минимальная полная стоимость корзины — 1.000 RSD.
+Желательная максимальная — 2.000 RSD.
 
+Не использовать больше продукции, чем есть в остатках.
+
+Пустое поле в отчёте = продукта нет, если пользователь не уточнил обратное.
+
+Не обязательно использовать все остатки. Если свежий продукт разумнее оставить для обычной продажи — предложи это в черновике.
+
+────────────────────
+3. КАК СОБИРАТЬ КОРЗИНЫ
+────────────────────
+
+Не стремись сделать максимальное количество маленьких корзин.
+
+Лучше меньше корзин, но более наполненных и привлекательных.
+
+Можно:
+— класть несколько одинаковых продуктов;
+— делать несколько одинаковых корзин;
+— делать чисто хлебные корзины;
+— объединять 3–4 хлеба в одну корзину.
+
+Для смешанных корзин по возможности:
+хлеб + pecivo + десерт.
+
+Не создавай странные комбинации только ради использования всех остатков.
+
+Если одинаковых корзин несколько — делай один блок и указывай Količina.
+
+ВАЖНО: при расчёте остатков умножай состав корзины на Količina.
+
+────────────────────
+4. ОХЛАЖДЁННЫЕ ПРОДУКТЫ
+────────────────────
+
+Можно рекомендовать для заморозки:
+
+Tartin
+Rustični sa semenkama
+Raženi hleb
+Focaccia
+
+Если вся корзина подходит для заморозки:
+
+❄️ Sve proizvode možete zamrznuti.
+
+Если только часть:
+
+❄️ [название продукта] možete zamrznuti.
+
+НЕ рекомендовать для заморозки:
+Brios hleb
+Focaccia sa pestom i sirom
+
+Для Focaccia sa pestom i sirom:
+
+🧀 Pesto focacciu ne zamrzavati. Čuvati u kesi ili frižideru. Zagrejati u rerni 160–180°C do 10 min.
+
+Для Banana bread:
+
+🧊 Banana bread čuvati u frižideru 5–7 dana.
+
+────────────────────
+5. НАЗВАНИЯ
+────────────────────
+
+В составе корзин используй только эти названия:
+
+Cimet
+Sir
+Brioš karamel
+Brioš zemička
+Babka čoko
+Babka sa karamelom
+Mak
+Tartin
+Rustični sa semenkama
+Brios hleb
+Raženi hleb
+Focaccia
+Focaccia sa pestom i sirom
+Banana bread (parče)
+Čokokeks (parče)
+Lemon cake (parče)
+
+Для охлаждённых продуктов добавляй:
+(ohlađen) / (ohlađena)
+
+Например:
+Tartin (ohlađen)
+Focaccia (ohlađena)
+
+Названия самих корзин можешь придумывать:
+Tartin Rustični Mix
+Hlebni Mix za Zamrzavanje
+Slatki Mix
+Pecivo Mix
+и т. п.
+
+────────────────────
+6. ДЕСЕРТЫ
+────────────────────
+
+Если указаны куски:
+
+Banana: 1 кусок → Banana bread (parče)
+Čokokeks: 2 куска → Čokokeks (parče) ×2
+Lemon cake: 1 кусок → Lemon cake (parče)
+
+Если десерт остался ЦЕЛЫМ — не включай его в NJUPPA без отдельного разрешения пользователя.
+
+────────────────────
+7. ДАТА
+────────────────────
+
+Обычно остатки за день D используются для корзин следующего рабочего дня.
+
+В заголовке ставь дату, НА КОТОРУЮ публикуются корзины.
+
+Если дату нельзя определить — спроси пользователя.
+
+────────────────────
 8. ФОРМАТ ОТВЕТА
-Только готовый текст корзин. Не показывай ход рассуждений, черновые
-расчёты и размышления. Никакого markdown — ни звёздочек, ни решёток.
+────────────────────
 
-Тон: простой, дружелюбный, без пафоса, честный.
+Сначала дай короткий ЧЕРНОВИК:
 
-Если не хватает позиций — СРАЗУ написать об этом, не придумывать.
+— сколько всего продукции;
+— какие корзины предлагаешь;
+— сколько продуктов будет использовано;
+— что останется;
+— что предлагаешь оставить вне NJUPPA.
+
+Затем дай ГОТОВЫЙ ТЕКСТ ДЛЯ ПУБЛИКАЦИИ на сербском.
+
+Формат:
+
+🌸 NJUPPA DD.MM 🌸
+
+🧺 #1 Название корзины
+
+Tartin (ohlađen) ×2
+Rustični sa semenkama (ohlađen)
+Cimet
+
+❄️ Sve proizvode koje je moguće zamrznuti možete zamrznuti.
+
+📞 Ako ne možete da preuzmete porudžbinu na vreme ili imate pitanje, pozovite/pišite nam: +381 62 8844 064.
+
+Ukupno: 1.370 RSD → 548 RSD (60%)
+Količina: 3️⃣ korpe
+
+──────────────
+
+Для количества:
+
+Količina: 1️⃣ korpa
+Količina: 2️⃣ korpe
+Količina: 3️⃣ korpe
+
+ТЕЛЕФОННЫЙ БЛОК ОБЯЗАТЕЛЕН В КАЖДОЙ КОРЗИНЕ. Копируй его дословно,
+он уже дан выше, спрашивать его у пользователя НЕ НУЖНО:
+
+📞 Ako ne možete da preuzmete porudžbinu na vreme ili imate pitanje, pozovite/pišite nam: +381 62 8844 064.
+
+────────────────────
+9. ПРОВЕРКА ПЕРЕД ОТВЕТОМ
+────────────────────
+
+Перед публикацией обязательно проверь:
+
+✓ ни одного продукта не использовано больше, чем есть;
+✓ при Količina >1 состав корзины умножен на количество корзин;
+✓ каждая корзина стоит минимум 1.000 RSD;
+✓ стоимость каждого продукта посчитана правильно;
+✓ цена NJUPPA = полная стоимость × 0,4;
+✓ целые десерты не использованы без разрешения;
+✓ Brios hleb и Focaccia sa pestom i sirom не рекомендованы для заморозки;
+✓ указана правильная дата;
+✓ в КАЖДОЙ корзине есть телефонный блок с номером +381 62 8844 064;
+✓ формат стоимости именно «Ukupno: X RSD → Y RSD (60%)», не «Puna cena»;
+✓ баланс сходится: исходные остатки = использовано + осталось.
+
+Если есть ошибка — сначала исправь её, затем выдавай финальный текст.
+
+────────────────────
+10. ЕСЛИ ЧЕГО-ТО НЕ ХВАТАЕТ
+────────────────────
+
+Не проси прислать текст корзин или телефонный блок — всё нужное уже есть
+в этой инструкции и в переданном отчёте. Работай с тем, что дано.
+Если данных действительно недостаточно, коротко скажи чего именно не хватает
+и всё равно выдай лучший возможный вариант.
 """
 
 
@@ -157,6 +321,27 @@ def is_allowed(uid: int) -> bool:
     return uid == ADMIN_CHAT_ID or str(uid) in STATE["users"]
 
 
+def user_role(uid) -> str:
+    if uid == ADMIN_CHAT_ID or str(uid) == str(ADMIN_CHAT_ID):
+        return "manager"
+    v = STATE["users"].get(str(uid))
+    if isinstance(v, dict):
+        return v.get("role") or "barista"
+    return "barista"
+
+
+def is_manager(uid) -> bool:
+    return user_role(uid) == "manager"
+
+
+def managers() -> list:
+    out = [ADMIN_CHAT_ID]
+    for u, v in STATE["users"].items():
+        if isinstance(v, dict) and v.get("role") == "manager" and int(u) != ADMIN_CHAT_ID:
+            out.append(int(u))
+    return out
+
+
 def user_name(uid) -> str:
     """Старый формат хранил строку, новый — словарь. Понимаем оба."""
     v = STATE["users"].get(str(uid))
@@ -182,7 +367,8 @@ def set_baskets(uid, baskets=None, report=None):
 
 
 def get_prompt() -> str:
-    return STATE.get("prompt") or DEFAULT_PROMPT
+    p = STATE.get("prompt")
+    return p if p and len(p) > 1000 else DEFAULT_PROMPT
 
 
 # ── ЧИСТКА И ПРОВЕРКИ ────────────────────────────────────────────────────────
@@ -309,7 +495,8 @@ FORMAT_REMINDER = (
     "\n\nФормат готового текста соблюдай ТОЧНО, как задано в промте:\n"
     "• строка Ukupno: XXXX RSD → XXXX RSD (60%) — именно так, не «Puna cena»\n"
     "• строка Količina: 1️⃣ korpa / 2️⃣ korpe с цифрой-эмодзи\n"
-    "• телефонный блок 📞 повторяется в КАЖДОЙ корзине дословно\n"
+    "• телефонный блок 📞 с номером +381 62 8844 064 повторяется в КАЖДОЙ корзине\n"
+    "• ничего не переспрашивай, работай с тем, что дано\n"
     "• заголовок 🌸 NJUPPA DD.MM 🌸 с датой публикации"
 )
 
@@ -320,11 +507,14 @@ def generate_baskets(report_text: str) -> str:
                   f"Составь корзины." + FORMAT_REMINDER)
 
 
-def fix_baskets(current: str, fix_request: str) -> str:
+def fix_baskets(current: str, fix_request: str, report: str = "") -> str:
+    head = f"Исходные остатки:\n\n{report}\n\n" if report else ""
     return ask_ai(get_prompt(), (
-        f"Вот текущий вариант корзин:\n\n{current}\n\n"
+        head +
+        f"Текущий вариант корзин:\n\n{current}\n\n"
         f"Нужно исправить: {fix_request}\n\n"
-        f"Верни полный обновлённый текст корзин." + FORMAT_REMINDER
+        f"Верни полный обновлённый текст корзин целиком, "
+        f"не переспрашивай." + FORMAT_REMINDER
     ))
 
 
@@ -352,10 +542,11 @@ def preview_keyboard():
 
 
 def access_keyboard(uid: int):
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Пустить как баристу", callback_data=f"approve:{uid}"),
-        InlineKeyboardButton("❌ Отказать", callback_data=f"deny:{uid}"),
-    ]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Бариста", callback_data=f"approve:{uid}"),
+         InlineKeyboardButton("👑 Менеджер", callback_data=f"promote:{uid}")],
+        [InlineKeyboardButton("❌ Отказать", callback_data=f"deny:{uid}")],
+    ])
 
 
 async def send_preview(context, chat_id: int, baskets: str, note: str = ""):
@@ -375,13 +566,14 @@ async def request_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Привет! Я собираю корзины для Njuppa.\n\n"
         "Отправила Светлане запрос на доступ — как подтвердит, напишу тебе."
     )
-    await context.bot.send_message(
-        ADMIN_CHAT_ID,
-        f"🔐 Запрос доступа\n\n{u.full_name}"
-        + (f"\n@{u.username}" if u.username else "")
-        + f"\nID: {u.id}",
-        reply_markup=access_keyboard(u.id),
-    )
+    text = (f"🔐 Запрос доступа\n\n{u.full_name}"
+            + (f"\n@{u.username}" if u.username else "")
+            + f"\nID: {u.id}")
+    for mid in managers():
+        try:
+            await context.bot.send_message(mid, text, reply_markup=access_keyboard(u.id))
+        except Exception:
+            pass
 
 
 async def run_ai(message, fn, *args):
@@ -420,28 +612,31 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
          "Под сборкой кнопки: опубликовать, исправить, пересобрать.\n\n"
          "/rebuild — пересобрать. Продали что-то внеурочно или целую корзину —\n"
          "  напиши что именно, пересоберу остальное.\n"
-         "/getprompt — показать правила сборки\n"
          "/cancel — отменить текущее действие")
-    if update.effective_user.id == ADMIN_CHAT_ID:
-        t += ("\n\nТолько для тебя:\n"
-              "/setprompt — изменить правила сборки\n"
+    if is_manager(update.effective_user.id):
+        t += ("\n\nДля менеджеров:\n"
+              "/getprompt — показать правила сборки\n"
+              "/setprompt — изменить правила (файлом .txt или кусками + /done)\n"
+              "/resetprompt — вернуть встроенные правила\n"
               "/users — кто имеет доступ\n"
               "/revoke ID — забрать доступ")
     await update.message.reply_text(t)
 
 
 async def cmd_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_CHAT_ID:
+    if not is_manager(update.effective_user.id):
         return
     if not STATE["users"]:
         await update.message.reply_text("Пока никого. Пусть напишут боту /start.")
         return
-    lines = [f"• {user_name(u)} — {u} (бариста)" for u in STATE["users"]]
+    lines = [f"• {user_name(u)} — {u}"
+             + (" 👑 менеджер" if user_role(u) == "manager" else " · бариста")
+             for u in STATE["users"]]
     await update.message.reply_text("Доступ есть у:\n" + "\n".join(lines))
 
 
 async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_CHAT_ID:
+    if not is_manager(update.effective_user.id):
         return
     if not context.args:
         await update.message.reply_text("Напиши так: /revoke 5525613586")
@@ -473,26 +668,76 @@ async def cmd_rebuild(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_getprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+    if not is_manager(update.effective_user.id):
+        if is_allowed(update.effective_user.id):
+            await update.message.reply_text("Правила сборки смотрят и меняют менеджеры.")
         return
     p = get_prompt()
+    src = "свой" if STATE.get("prompt") and len(STATE["prompt"]) > 1000 else "встроенный"
+    await update.message.reply_text(f"Сейчас работает {src} промт, {len(p)} символов:")
     for i in range(0, len(p), 3800):
         await update.message.reply_text(p[i:i + 3800])
 
 
 async def cmd_setprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("Правила меняет только Светлана.")
+    if not is_manager(update.effective_user.id):
+        if is_allowed(update.effective_user.id):
+            await update.message.reply_text("Правила сборки меняют менеджеры.")
         return
     context.user_data["state"] = WAITING_FOR_PROMPT
+    context.user_data[PROMPT_PARTS] = []
     await update.message.reply_text(
-        "Пришли новый промт одним сообщением.\n"
-        "Совет: сначала /getprompt, скопируй, поправь и пришли обратно."
+        "📝 Жду новый промт. Два способа:\n\n"
+        "1️⃣ Файлом — просто пришли .txt с промтом. Длина любая, это надёжнее.\n\n"
+        "2️⃣ Сообщениями — присылай кусками, телеграм режет по 4096 символов.\n"
+        "Как закончишь, напиши /done.\n\n"
+        "Отменить — /cancel"
+    )
+
+
+async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_manager(update.effective_user.id):
+        return
+    if context.user_data.get("state") != WAITING_FOR_PROMPT:
+        await update.message.reply_text("Сейчас нечего заканчивать.")
+        return
+    parts = context.user_data.get(PROMPT_PARTS) or []
+    text = "\n".join(parts).strip()
+    context.user_data["state"] = None
+    context.user_data[PROMPT_PARTS] = []
+
+    if len(text) < 200:
+        await update.message.reply_text(
+            "Промт подозрительно короткий, не сохраняю.\n"
+            "Если хотела вернуть встроенный — /resetprompt"
+        )
+        return
+
+    STATE["prompt"] = text
+    ok = save_state(STATE)
+    await update.message.reply_text(
+        f"✅ Промт сохранён, {len(text)} символов, частей: {len(parts)}.\n"
+        "Действует со следующей сборки."
+        + ("" if ok else "\n⚠️ На диск не записалось, слетит при перезапуске.")
+    )
+
+
+async def cmd_resetprompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_manager(update.effective_user.id):
+        if is_allowed(update.effective_user.id):
+            await update.message.reply_text("Правила сборки меняют менеджеры.")
+        return
+    STATE["prompt"] = DEFAULT_PROMPT
+    save_state(STATE)
+    context.user_data["state"] = None
+    await update.message.reply_text(
+        f"↩️ Вернула встроенный промт, {len(DEFAULT_PROMPT)} символов."
     )
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["state"] = None
+    context.user_data[PROMPT_PARTS] = []
     await update.message.reply_text("Ок, отменила.")
 
 
@@ -516,20 +761,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get("state")
 
-    if state == WAITING_FOR_PROMPT:
-        STATE["prompt"] = message.text or ""
-        ok = save_state(STATE)
-        context.user_data["state"] = None
+    if state == WAITING_FOR_PROMPT and is_manager(uid):
+        # промт файлом — без ограничений по длине
+        if message.document:
+            try:
+                f = await message.document.get_file()
+                raw = await f.download_as_bytearray()
+                text = bytes(raw).decode("utf-8", errors="replace").strip()
+            except Exception as e:
+                await message.reply_text(f"❌ Не смогла прочитать файл: {e}")
+                return
+            if len(text) < 200:
+                await message.reply_text("В файле почти пусто, не сохраняю.")
+                return
+            STATE["prompt"] = text
+            ok = save_state(STATE)
+            context.user_data["state"] = None
+            context.user_data[PROMPT_PARTS] = []
+            await message.reply_text(
+                f"✅ Промт из файла сохранён, {len(text)} символов."
+                + ("" if ok else "\n⚠️ На диск не записалось.")
+            )
+            return
+
+        parts = context.user_data.setdefault(PROMPT_PARTS, [])
+        parts.append(message.text or "")
+        total = sum(len(p) for p in parts)
         await message.reply_text(
-            "✅ Промт сохранён." if ok else
-            "⚠️ Промт применён, но сохранить не вышло — слетит при перезапуске.\n"
-            "Проверь, что в Railway подключён Volume на /data."
+            f"Принято, часть {len(parts)}, всего {total} символов.\n"
+            "Ещё кусок или /done"
         )
         return
 
     if state == WAITING_FOR_FIX:
         await message.reply_text("⏳ Исправляю...")
-        new = await run_ai(message, fix_baskets, get_baskets(uid), message.text or "")
+        new = await run_ai(message, fix_baskets,
+                           get_baskets(uid), message.text or "", get_report(uid))
         if new is None:
             return
         set_baskets(uid, baskets=new)
@@ -577,39 +844,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data or ""
 
     # ── доступ
-    if data.startswith(("approve:", "deny:")):
-        if query.from_user.id != ADMIN_CHAT_ID:
+    if data.startswith(("approve:", "promote:", "deny:")):
+        if not is_manager(query.from_user.id):
             return
         action, uid = data.split(":", 1)
-        if action == "approve":
-            try:
-                chat = await context.bot.get_chat(int(uid))
-                name = chat.full_name or chat.username or uid
-            except Exception:
-                name = uid
-            STATE["users"][uid] = {"name": name, "role": "barista"}
-            ok = save_state(STATE)
-            await query.edit_message_text(
-                f"✅ Доступ выдан (бариста): {name} ({uid})"
-                + ("" if ok else "\n⚠️ Не сохранилось на диск — слетит при перезапуске.")
-            )
-            try:
-                await context.bot.send_message(
-                    int(uid),
-                    "✅ Доступ открыт!\n\n"
-                    "Присылай отчёт по остаткам — соберу корзины.\n"
-                    "Кнопки под сборкой твои: можешь править, пересобирать "
-                    "и публиковать в Njuppa.\n\n"
-                    "/help — что ещё умею"
-                )
-            except Exception:
-                pass
-        else:
+
+        if action == "deny":
             await query.edit_message_text(f"❌ Отказано (ID {uid})")
             try:
                 await context.bot.send_message(int(uid), "Доступ не открыли.")
             except Exception:
                 pass
+            return
+
+        role = "manager" if action == "promote" else "barista"
+        try:
+            chat = await context.bot.get_chat(int(uid))
+            name = chat.full_name or chat.username or uid
+        except Exception:
+            name = user_name(uid)
+
+        STATE["users"][uid] = {"name": name, "role": role}
+        ok = save_state(STATE)
+        label = "менеджер 👑" if role == "manager" else "бариста"
+        await query.edit_message_text(
+            f"✅ Доступ выдан ({label}): {name} ({uid})"
+            + ("" if ok else "\n⚠️ Не сохранилось на диск — слетит при перезапуске.")
+        )
+        hello = ("✅ Доступ открыт!\n\n"
+                 "Присылай отчёт по остаткам — соберу корзины.\n"
+                 "Кнопки под сборкой твои: править, пересобирать, публиковать.\n\n")
+        if role == "manager":
+            hello += ("Ты менеджер: можешь ещё смотреть и менять правила сборки\n"
+                      "(/getprompt, /setprompt) и выдавать доступ другим.\n\n")
+        hello += "/help — что ещё умею"
+        try:
+            await context.bot.send_message(int(uid), hello)
+        except Exception:
+            pass
         return
 
     # ── корзины: публикует любой, у кого есть доступ
@@ -628,11 +900,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_thread_id=NJUPPA_THREAD_ID
             )
             await query.edit_message_text("✅ Опубликовано в Njuppa!")
-            if uid != ADMIN_CHAT_ID:
+            for mid in managers():
+                if mid == uid:
+                    continue
                 try:
                     await context.bot.send_message(
-                        ADMIN_CHAT_ID,
-                        f"📤 {user_name(uid)} опубликовала корзины в Njuppa."
+                        mid, f"📤 {user_name(uid)} опубликовала корзины в Njuppa."
                     )
                 except Exception:
                     pass
@@ -665,7 +938,8 @@ def main():
     for name, fn in (("start", cmd_start), ("help", cmd_help),
                      ("rebuild", cmd_rebuild), ("getprompt", cmd_getprompt),
                      ("setprompt", cmd_setprompt), ("cancel", cmd_cancel),
-                     ("users", cmd_users), ("revoke", cmd_revoke)):
+                     ("users", cmd_users), ("revoke", cmd_revoke),
+                     ("done", cmd_done), ("resetprompt", cmd_resetprompt)):
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
